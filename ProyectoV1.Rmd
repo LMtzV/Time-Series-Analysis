@@ -1,0 +1,248 @@
+---
+title: '"Scrap_Proyecto_TS"'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include= FALSE}
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(ggthemes)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(viridis)
+library(rmutil)
+library(STAR)
+library(statmod)
+library(invgamma)
+library(gtools)
+library(mvtnorm)
+library(matrixStats)
+library(ggpubr)
+library(functional)
+library(tseries)
+library(zoo)
+library(forecast)
+library(astsa)
+library(MLmetrics)
+library(tframePlus)
+library(bestNormalize)
+library(lmtest)
+```
+
+Alguna idea de cómo podemos ir trabajando y puliendo el proyecto. 
+
+```{r}
+# Gestion de Datos
+#Leemos archivo
+datos.R <- read_csv('./Series_Remesas_Proyecto_Team3.csv')
+datos.R$Fecha <- as.Date(datos.R$Fecha, format = '%d / %m / %y')
+###########################################
+
+# Selección de posibles modelos
+
+# Graficamos la serie de tiempo sin modificaciones
+TS <- ts(datos.R[, 2], start = 1996, frequency = 12)
+TS <- as.quarterly(TS, FUN = sum)
+autoplot(TS)
+FAC <- acf2(TS, 24)
+adf.test(TS)
+
+bestNormalize::boxcox(TS)
+# Mientras que la estimación de lamda para la transformación Box-Cox sugiere una 
+#transformar la serie con una transformación Box-Cox con lambda = 0.63, 
+#favoreciendo la interpretabilidad del modelo y considerando que el cambio de 
+#varianza no es tan extremo se tomará la transformación log()
+
+# Notamos algo de incremento de varianza mientras aumenta el nivel, 
+#por lo tanto aplicamos log para estabilizar la varianza
+log_TS <- log(TS)
+autoplot(log_TS)
+FAC <- acf2(log_TS, 24)
+adf.test(log_TS)
+
+# La serie claramente no es estacionaria, muestra un aumento constante de nivel 
+#y un valor-p de 0.64 en la prueba de Dickey-Fuller por lo tanto aplicamos 
+#una diferencia.
+D1_log_TS <- diff(log_TS)
+autoplot(D1_log_TS)
+FAC <- acf2(D1_log_TS, 24)
+adf.test(D1_log_TS)
+
+# La serie parecen tener estacionalidad anual ya que todos los múltiplos de 4 
+#en la FAC tienen un pico, reemplazamos nuestra diferencia normal por una 
+#estacional con un lag de 4.
+ggseasonplot(D1_log_TS)
+SD4_log_TS <- diff(log_TS, 4)
+autoplot(SD4_log_TS)
+FAC <- acf2(SD4_log_TS, 24)
+adf.test(SD4_log_TS)
+
+# Mientras que se ha tomado en cuenta el efecto de la estacionalidad, 
+#una prueba Dickey-Fuller con valor-p de 0.61 y la FAC nos dejan claro que la 
+#serie aún no es estacionaria. Por lo tanto aplicamos una diferencia no 
+#estacional.
+
+D1_SD4_log_TS <- diff(SD4_log_TS, 4)
+autoplot(D1_SD4_log_TS)
+FAC <- acf2(D1_SD4_log_TS, 24)
+adf.test(D1_SD4_log_TS)
+
+# Vemos que todavía hay algunos comportamientos que eliminar de la FAC para 
+#que parezca ruido.
+
+# El primero que buscamos eliminar es el pico negativo en el cuarto valor 
+#tanto de la FAC como de la FACP, para esto podemos agregar un término AR 
+#estacional o un término MA estacional. Dado que este pico sólo se ve en el
+#primer múltiplo de 4 en la FAC y luego se ve pero a mucho menor escala, es 
+#más probable que el término sea MA.
+
+
+fit1 <- Arima(
+  log_TS,
+  order = c(0, 1, 0),
+  seasonal = list(order = c(1, 1, 0), period = 4),
+  lambda = NULL,
+  include.constant = TRUE
+)
+mean(fit1$residuals)
+# SUPUESTO 1: Tienen media cero los residuos
+checkresiduals(fit1)
+# SUPUESTO 2: Tiene un ligero decremento en varianza, nada demasiado grande
+Box.test(fit1$residuals,
+         type = "Ljung",
+         lag = 24,
+         fitdf = 0)
+# SUPUESTO 3: Hay suficiente evidencia para decir que los errores están 
+#correlacionados, se rompe el modelo (con un 90% de certeza)
+
+3 * sqrt(var(fit1$residuals))
+
+# SUPUESTO 5: Parece haber 2 observaciones aberrantes fuera de 
+#+-3*desviación estándar
+coeftest(fit1)
+
+# SUPUESTO 6: No hay un modelo con menos parámetros y por lo tanto es 
+#parsimonioso, el parámetro es muy significativo
+autoplot(fit1)
+
+# SUPUESTO 7: El modelo es admisible, sus raíces están dentro del 
+#círculo unitario
+# SUPUESTO 8: Dado que hay sólo un parámetro, no hay correlación entre 
+#parámetros.
+
+FAC <- acf2(fit1$residuals)
+summary(fit1)
+
+
+# AIC = -225.24
+
+
+# Veamos ahora un parámetro MA estacional
+fit2 <- Arima(
+  log_TS,
+  order = c(0, 1, 0),
+  seasonal = list(order = c(0, 1, 1), period = 4),
+  lambda = NULL,
+  include.constant = TRUE
+)
+mean(fit2$residuals)
+# SUPUESTO 1: Tienen media cero los residuos
+checkresiduals(fit2)
+# SUPUESTO 2: Tiene un ligero decremento en varianza, nada demasiado grande
+Box.test(fit2$residuals,
+         type = "Ljung",
+         lag = 24,
+         fitdf = 0)
+# SUPUESTO 3: No hay suficiente evidencia para decir que hay autocorrelación
+#importante los residuos
+# SUPUESTO 4: Se asemejan a una distribución normal los residuos
+3 * sqrt(var(fit2$residuals))
+# SUPUESTO 5:  Parece haber 2 observaciones aberrantes fuera de +-3*desviación 
+#estándar, las mismas que en el modelo anterior.
+coeftest(fit2)
+# SUPUESTO 6: No hay un modelo con menos parámetros y por lo tanto es 
+#parsimonioso, el parámetro es muy significativo
+autoplot(fit2)
+# SUPUESTO 7: El modelo es admisible, sus raíces están dentro del círculo 
+#unitario
+# SUPUESTO 8: Dado que hay sólo un parámetro, no hay correlación entre parámetros.
+FAC <- acf2(fit2$residuals)
+summary(fit2)
+# AIC = -242.31
+
+
+# La FAC de los residuos del primer modelo indica que podría beneficiarse de 
+#un término MA no estacional.
+
+fit3 <- Arima(
+  log_TS,
+  order = c(0, 1, 1),
+  seasonal = list(order = c(1, 1, 0), period = 4),
+  lambda = NULL,
+  include.constant = TRUE
+)
+mean(fit3$residuals)
+# SUPUESTO 1: Tienen media cero los residuos
+checkresiduals(fit3)
+# SUPUESTO 2: Tiene un ligero decremento en varianza, nada demasiado grande
+Box.test(fit3$residuals,
+         type = "Ljung",
+         lag = 24,
+         fitdf = 0)
+# SUPUESTO 3: No hay suficiente evidencia para decir que hay autocorrelación 
+#importante los residuos
+# SUPUESTO 4: Se asemejan a una distribución normal los residuos
+3 * sqrt(var(fit3$residuals))
+# SUPUESTO 5:  Hay sólo una observación fuera de +-3*desviación estándar 
+#de los residuos y otra muy cerca de estarlo
+coeftest(fit3)
+# SUPUESTO 6: El parámetro MA estacional parece no ser tan significativo 
+#como los parámetros de los otros dos modelos, aunque sigue siendo bastante 
+#significativo. El parámetro AR estacional sigue siendo muy significativo.
+autoplot(fit3)
+# SUPUESTO 7: El modelo es admisible, sus raíces están dentro del círculo
+#unitario
+FAC <- acf2(fit3$residuals)
+summary(fit3)
+# AIC = -228.11
+
+```
+ 
+\textbf{IMPORTANTE}
+ El primer modelo viola el supuesto de autocorrelación de los errores y por lo tanto lo desechamos por completo. Nos queda decidir entre el segundo y tercer modelo. La validación de los supuestos entre el segundo y tercer modelo son muy similares. Hay el segundo modelo tiene 2 observaciones aberrantes mientras que el tercero sólo una, pero está muy cerca de tener una segunda y este no es un factor tan importante del modelo. Podemos decir que el segundo modelo es más parsimonioso que el tercero ya que el agregar un parámetro no estacional no tan significativo se complica un poco el modelo. Este tampoco es un punto tan importante ya que aunque no tanto como el parámetro estacional, sigue siento significativo el parámetro MA no estacional agregado. Por lo tanto nos queda el AIC que es mejor en el segundo modelo que en el tercero, esta siendo la diferencia más significativa entre ambos y por la cual escogeremos el segundo.
+ 
+ 
+```{r}
+ARIMA_max <- auto.arima(log_TS, trace = TRUE)
+ARIMA_max
+# La función auto.arima valida nuestra elección de modelo, considerando al 
+#SARIMA(0,1,0)(0,1,1)[4] la mejor elección.
+
+# Veamos el modelo graficado contra el log de la serie
+autoplot(log_TS) + autolayer(fit2$fitted, series = "SARIMA(0,1,0)(0,1,1)[4]")
+# Y graficado con la serie original
+autoplot(TS) + autolayer(exp(fit2$fitted), series = "SARIMA(0,1,0)(0,1,1)[4]")
+
+# Veamos el forecast 3 años adelante para el log de la serie
+pred_log_TS <- forecast(fit2, h = 12)
+plot(pred_log_TS)
+
+# Veamos el forecast 3 años adelante para la serie original.
+pred_TS = forecast(fit2, h = 12)
+pred_TS$mean       = exp(pred_TS$mean)
+pred_TS$lower      = exp(pred_TS$lower)
+pred_TS$upper      = exp(pred_TS$upper)
+pred_TS$x          = exp(pred_TS$x)
+pred_TS$fitted     = exp(pred_TS$fitted)
+pred_TS$residuals  = exp(pred_TS$residuals)
+plot(pred_TS)
+
+#sarima_forecast <- sarima.for(log_TS, n.ahead=12,p=0,d=1,q=1,P=1,D=1,Q=0,S=4)
+
+```
